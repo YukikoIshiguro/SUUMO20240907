@@ -1,0 +1,80 @@
+import scrapy
+from scrapy.http.response.html import HtmlResponse
+from urllib.parse import urljoin
+import pandas as pd
+from datetime import datetime
+
+class SuumoSpider(scrapy.Spider):
+    name = "suumo"
+    origin = "https://suumo.jp"
+    allowed_domains = ["suumo.jp"]
+    start_urls = [
+        "https://suumo.jp/jj/chintai/ichiran/FR301FC005/?ar=030&bs=040&ta=13&sc=13113&cb=0.0&ct=8.0&mb=0&mt=9999999&et=20&cn=5&shkr1=03&shkr2=03&shkr3=03&shkr4=03&sngz=&po1=25&po2=99&pc=50"
+    ]
+    
+    properties = []  # データを保存するリスト
+
+    def parse(self, response: HtmlResponse):
+        # ページの物件データを処理
+        self.handle_response(response)
+
+        # ページネーション処理
+        next_page = response.css("a.pagination-next::attr(href)").get()
+        if next_page:
+            yield scrapy.Request(url=urljoin(self.origin, next_page), callback=self.parse)
+
+    def handle_response(self, response: HtmlResponse):
+        for row in response.css("div.property"):
+            title = row.css("h2.property_inner-title a::text").get(default='').strip()
+            rent_price = row.css("div.detailbox-property-point::text").get(default='').strip()
+            
+            property_table = row.css("div.detailbox > div.detailbox-property > table")
+            plan_of_house = property_table.css("td.detailbox-property--col3 > div:nth-child(1)::text").get(default='').strip()
+            exclusive_area = property_table.css("td.detailbox-property--col3 > div:nth-child(2)::text").get(default='').strip()
+            
+            detail_texts = row.css("div.detailbox-note div.detailnote-box div::text").getall()
+            detail_texts = [t.strip() for t in detail_texts if t.strip() != ""]
+            detail = "\n".join(detail_texts).strip()
+
+            # row.get() の内容を住所として保存
+            address_text = row.get().strip()
+
+            # デバッグ用出力（住所の内容を確認）
+            print(f"住所: {address_text}")
+
+            # スクレイピング結果を一時的にリストに保存
+            self.properties.append({
+                "Title": title,
+                "Rent Price": rent_price,
+                "Plan of House": plan_of_house,
+                "Exclusive Area": exclusive_area,
+                "Detail": detail,
+                "Address": address_text,  # row.get()の内容を住所として使用
+            })
+
+    def close(self, reason):
+        """
+        スパイダーが全ての処理を完了した際に呼び出される
+        """
+        self.save_to_excel()
+
+    def save_to_excel(self):
+        # pandasを使ってデータをExcelに変換
+        df = pd.DataFrame(self.properties)
+
+        # 列の順序を調整して、住所をF列に配置（住所は5番目の列）
+        column_order = ["Title", "Rent Price", "Plan of House", "Exclusive Area", "Detail", "Address"]  # AddressがF列
+
+        # 列順を指定してデータフレームを並び替える
+        df = df[column_order]
+        
+        # 現在の日付と時間をファイル名に組み込む
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"suumo_data_{current_time}.xlsx"
+
+        # ファイルをダウンロードフォルダ直下に保存
+        file_path = f"C:/Users/yukik/Downloads/{file_name}"
+        df.to_excel(file_path, index=False)
+
+        # ファイル保存が成功したことをログに出力
+        self.log(f"Excel file saved: {file_path}")
