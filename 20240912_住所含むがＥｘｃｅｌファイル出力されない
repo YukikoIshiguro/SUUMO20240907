@@ -1,0 +1,75 @@
+import scrapy
+from scrapy.http.response.html import HtmlResponse
+from urllib.parse import urljoin
+from parsel import SelectorList
+import pandas as pd
+from datetime import datetime
+
+class SuumoSpider(scrapy.Spider):
+    name = "suumo"
+    origin = "https://suumo.jp"
+    allowed_domains = ["suumo.jp"]
+    start_urls = [
+        "https://suumo.jp/jj/chintai/ichiran/FR301FC005/?ar=030&bs=040&ta=13&sc=13113&cb=0.0&ct=8.0&mb=0&mt=9999999&et=20&cn=5&shkr1=03&shkr2=03&shkr3=03&shkr4=03&sngz=&po1=25&po2=99&pc=50"
+    ]
+    
+    properties = []  # データを保存するリスト
+
+    async def parse(self, response: HtmlResponse):
+        await self.handle_response(response)
+
+        # ページネーション処理
+        paginators: SelectorList = response.css(".pagination-parts")
+        last_paginator = paginators[-1]
+        if last_paginator.css("::text").get() == "次へ":
+            next_url = last_paginator.css("a").attrib.get("href")
+            if next_url:
+                yield scrapy.Request(url=urljoin(self.origin, next_url))
+
+    async def handle_response(self, response: HtmlResponse):
+        for row in response.css("div.property"):
+            title = row.css("h2.property_inner-title a::text").get(default='').strip()
+            rent_price = row.css("div.detailbox-property-point::text").get(default='').strip()
+            
+            property_table = row.css("div.detailbox > div.detailbox-property > table")
+            plan_of_house = property_table.css("td.detailbox-property--col3 > div:nth-child(1)::text").get(default='').strip()
+            exclusive_area = property_table.css("td.detailbox-property--col3 > div:nth-child(2)::text").get(default='').strip()
+            
+            detail_texts = row.css("div.detailbox-note div.detailnote-box div::text").getall()
+            detail_texts = [t.strip() for t in detail_texts if t.strip() != ""]
+            detail = "\n".join(detail_texts).strip()
+            
+            # 住所の取得 (正しいCSSセレクタに修正)
+            address = row.css("td.detailbox-property-col::text").get(default='').strip()
+            print(row.get())
+            #
+
+            # スクレイピング結果を一時的にリストに保存
+            self.properties.append({
+                "Title": title,
+                "Rent Price": rent_price,
+                "Plan of House": plan_of_house,
+                "Exclusive Area": exclusive_area,
+                "Detail": detail,
+                "Address": address,  # 修正後の住所
+            })
+
+    def close(self, reason):
+        """
+        スパイダーが全ての処理を完了した際に呼び出される
+        """
+        self.save_to_excel()
+
+    def save_to_excel(self):
+        # pandasを使ってデータをExcelに変換
+        df = pd.DataFrame(self.properties)
+        
+        # 現在の日付と時間をファイル名に組み込む
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"suumo_data_{current_time}.xlsx"
+
+        # ファイルをダウンロードフォルダ直下に保存
+        file_path = f"C:/Users/yukik/Downloads/{file_name}"
+        df.to_excel(file_path, index=False)
+
+        self.log(f"Excel file saved: {file_path}")
