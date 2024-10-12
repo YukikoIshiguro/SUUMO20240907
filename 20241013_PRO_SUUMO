@@ -1,0 +1,158 @@
+import scrapy
+from scrapy.http.response.html import HtmlResponse
+from urllib.parse import urljoin
+import pandas as pd
+from datetime import datetime
+import os
+
+
+class SuumoSpider(scrapy.Spider):
+    name = "suumo"
+    origin = "https://suumo.jp"
+    allowed_domains = ["suumo.jp"]
+    start_urls = [
+        "https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&ra=014&ae=01251&cb=0.0&ct=9999999&et=9999999&cn=9999999&mb=0&mt=9999999&shkr1=03&shkr2=03&shkr3=03&shkr4=03&fw2=&ek=012540940&rn=0125"
+    ]
+
+    properties = []  # 物件情報を保存するためのリスト
+    batch_size = 200  # 200件ごとに保存
+    all_properties = []  # 全データをまとめるリスト
+
+    def parse(self, response: HtmlResponse):
+        """
+        各ページの物件データを処理し、次のページがあればリクエストを送ります。
+        """
+        # 現在のページの物件データを処理します
+        self.handle_response(response)
+
+        # 「次へ」ボタンのリンクを取得（「次へ」というテキストを持つリンクを探す）
+        next_page = response.css('p.pagination-parts a:contains("次へ")::attr(href)').get()
+
+        if next_page:
+            # URLを正規化して次のページにリクエスト
+            next_page_url = urljoin(self.origin, next_page)
+            self.log(f"次のページへ移動します: {next_page_url}")
+            yield scrapy.Request(url=next_page_url, callback=self.parse)
+        else:
+            self.log("次のページはありません。スクレイピングを終了します。")
+
+    def handle_response(self, response: HtmlResponse):
+        """
+        物件データを処理するためのメソッドです。
+        各物件の情報を抽出してリストに保存します。
+        """
+        for property in response.css("div.cassetteitem"):
+            # 1. 'name': 物件名（マンション名）を取得
+            name = property.css('.cassetteitem_content-title::text').get(default='').strip()
+
+            # 2. 'address': 物件の住所を取得
+            address = property.css('li.cassetteitem_detail-col1::text').get(default='').strip()
+
+            # 3. 'stations': 物件の最寄り駅情報をリスト形式で取得し、カンマ区切りで結合
+            stations = property.css('.cassetteitem_detail-col2 .cassetteitem_detail-text::text').getall()
+            stations = ', '.join([station.strip() for station in stations])
+
+            # 4. 'year_built': 物件の築年数を取得
+            year_built = property.css('li.cassetteitem_detail-col3 > div:nth-child(1)::text').get(default='').strip()
+            if '築' in year_built:
+                year_built = year_built.replace('築', '').replace('年', '').strip()
+            else:
+                year_built = '不明'
+
+            # 5. 'floors': 物件の階数（地上何階建てか）を取得
+            floors = property.css('li.cassetteitem_detail-col3 > div:nth-child(2)::text').re_first(r'(\d+)階建')
+            if not floors:
+                floors = '不明'
+
+            # デバッグ用プリント: 取得したデータを確認
+            print(f"物件名: {name}, 住所: {address}, 駅: {stations}, 築年: {year_built}, 階数: {floors}")
+
+            # データをリストに追加
+            self.properties.append({
+                "name": name,
+                "address": address,
+                "stations": stations,
+                "year_built": year_built,
+                "floors": floors,
+            })
+
+            # 200件ごとに一時的にデータを保存しつつ、全データを保持
+            if len(self.properties) >= self.batch_size:
+                print(f"--- {self.batch_size}件に達したため一時保存 ---")  # デバッグ用プリント
+                self.save_temp_data()
+                self.all_properties.extend(self.properties)  # 全データに追加
+                self.properties.clear()  # バッチをクリア
+
+    def save_temp_data(self):
+        """
+        200件ごとに一時的にExcelファイルとして保存する関数
+        """
+        # pandas でデータフレームに変換
+        df = pd.DataFrame(self.properties)
+
+        # 現在の日付を取得しファイル名を作成
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"suumo_data_batch_{current_time}.xlsx"
+
+        # ダウンロードフォルダの取得
+        download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.exists(download_dir):
+            # ダウンロードフォルダが存在しない場合はホームディレクトリに保存
+            file_path = os.path.join(os.path.expanduser("~"), file_name)
+        else:
+            # ダウンロードフォルダが存在する場合はその中に保存
+            file_path = os.path.join(download_dir, file_name)
+
+        # Excel ファイルを保存
+        df.to_excel(file_path, index=False)
+
+        # ログを出力
+        self.log(f"{len(self.properties)}件のデータが一時保存されました: {file_path}")
+
+        # デバッグ用プリント: 保存先と保存された件数を確認
+        print(f"一時保存: {file_path}, 件数: {len(self.properties)}")
+
+    def save_final_data(self):
+        """
+        最終的に全ての物件データを1つのExcelファイルとして保存する関数
+        """
+        # pandas で全データフレームに変換
+        df = pd.DataFrame(self.all_properties)
+
+        # 現在の日付を取得しファイル名を作成
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"suumo_data_final_{current_time}.xlsx"
+
+        # ダウンロードフォルダの取得
+        download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.exists(download_dir):
+            # ダウンロードフォルダが存在しない場合はホームディレクトリに保存
+            file_path = os.path.join(os.path.expanduser("~"), file_name)
+        else:
+            # ダウンロードフォルダが存在する場合はその中に保存
+            file_path = os.path.join(download_dir, file_name)
+
+        # Excel ファイルを保存
+        df.to_excel(file_path, index=False)
+
+        # ログを出力
+        self.log(f"{len(self.all_properties)}件の全データが保存されました: {file_path}")
+
+        # デバッグ用プリント: 保存先と最終保存された件数を確認
+        print(f"最終保存: {file_path}, 件数: {len(self.all_properties)}")
+
+    def close(self, reason):
+        """
+        スパイダーの全ての処理が終了した時に呼ばれるメソッドです。
+        残っているデータと、最終的に全データをまとめて保存します。
+        """
+        # 最後に残っている物件データを保存
+        if self.properties:
+            print(f"終了前に残っているデータを一時保存します。")  # デバッグ用プリント
+            self.save_temp_data()
+            self.all_properties.extend(self.properties)
+
+        # 最終データを1つのExcelファイルに保存
+        if self.all_properties:
+            print(f"全データを1つのファイルに保存します。")  # デバッグ用プリント
+            self.save_final_data()
