@@ -1,0 +1,95 @@
+import scrapy
+from scrapy.http.response.html import HtmlResponse
+from urllib.parse import urljoin
+import pandas as pd
+from datetime import datetime
+import re
+import os  # 追加
+
+class SuumoSpider(scrapy.Spider):
+    name = "suumo"
+    origin = "https://suumo.jp"
+    allowed_domains = ["suumo.jp"]
+    start_urls = [
+        "https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&ra=014&ae=01251&cb=0.0&ct=9999999&et=9999999&cn=9999999&mb=0&mt=9999999&shkr1=03&shkr2=03&shkr3=03&shkr4=03&fw2=&ek=012540650&rn=0125"
+    ]
+
+    properties = []  # 物件情報を保存するためのリスト
+
+    def parse(self, response: HtmlResponse):
+        """
+        スパイダーが最初に呼ばれるメソッドです。
+        各ページの物件データを処理し、次のページがあればリクエストを送ります。
+        """
+        # 現在のページの物件データを処理します
+        self.handle_response(response)
+
+        # 次のページがあるかを確認
+        next_page = response.css("a.pagination-next::attr(href)").get()
+        if next_page:
+            yield scrapy.Request(url=urljoin(self.origin, next_page), callback=self.parse)
+
+    def handle_response(self, response: HtmlResponse):
+        """
+        物件データを処理するためのメソッドです。
+        各物件の情報を抽出してリストに保存します。
+        """
+        for property in response.css("div.cassetteitem"):
+            # 1. 'name': 物件名（マンション名）を取得
+            name = property.css('.cassetteitem_content-title::text').get(default='').strip()
+            # 説明: .cassetteitem_content-title という CSS クラスから物件名を取得します。
+            # 例: 「カスタリア銀座」
+
+            # 2. 'address': 物件の住所を取得
+            address = response.css('#js-bukkenList > ul:nth-child(4) > li:nth-child(2) > div > div.cassetteitem-detail > div.cassetteitem-detail-body > div > div.cassetteitem_content-body > ul > li.cassetteitem_detail-col1::text').getall()
+            # 説明: .cassetteitem_detail-col1 の下にある .cassetteitem_detail-text クラスから住所を取得します。
+            # 例: 「東京都中央区銀座1」
+
+            # 3. 'station': 物件の最寄り駅情報をリスト形式で取得
+            stations = property.css('.cassetteitem_detail-col2 .cassetteitem_detail-text::text').getall()
+            # 説明: .cassetteitem_detail-col2 の .cassetteitem_detail-text クラスから全ての最寄り駅情報をリストで取得します。
+            # 例: 「東京メトロ有楽町線/銀座一丁目駅 歩2分」などの複数駅情報
+
+            # 4. 'year_built': 物件の築年数を取得
+            year_built = property.css('.cassetteitem_detail-col3 .cassetteitem_detail-text::text').get(default='').strip()
+            # 説明: .cassetteitem_detail-col3 の .cassetteitem_detail-text クラスから築年数を取得します。
+            # 例: 「築20年」
+
+            # 5. 'floors': 物件の階数（地上何階建てか）を正規表現で抽出
+            floors = property.css('.cassetteitem_detail-col3 .cassetteitem_detail-text::text').re_first(r'(\d+)階建')
+            # 説明: 正規表現で「〇〇階建」という形式の階数を抽出します。
+            # 例: 「地上13階建」の「13」の部分が抽出されます。
+
+            # データをリストに追加
+            self.properties.append({
+                "name": name,
+                "address": address,
+                "stations": stations,
+                "year_built": year_built,
+                "floors": floors,
+            })
+
+    def close(self, reason):
+        """
+        スパイダーの全ての処理が終了した時に呼ばれるメソッドです。
+        データを Excel ファイルとして保存します。
+        """
+        self.save_to_excel()
+
+    def save_to_excel(self):
+        """
+        スクレイピングしたデータを Excel ファイルとして保存します。
+        """
+        # pandas でデータフレームに変換
+        df = pd.DataFrame(self.properties)
+
+        # 現在の日付を取得しファイル名を作成
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"suumo_data_{current_time}.xlsx"
+
+        # Excel ファイルをダウンロードフォルダに保存 (ホームディレクトリを使用)
+        file_path = os.path.join(os.path.expanduser("~"), "Downloads", file_name)
+        df.to_excel(file_path, index=False)
+
+        # ファイル保存をログに出力
+        self.log(f"Excelファイルが保存されました: {file_path}")
